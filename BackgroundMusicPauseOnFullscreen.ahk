@@ -7,6 +7,7 @@ global ConfigFilePath := A_ScriptDir "\BackgroundMusicConfig.ini"
 global MusicFilePath := ""
 global WasPausedByFullscreen := false
 global LastFullscreenState := false
+global FullscreenMuteEnabled := true
 
 MusicPlayer.settings.setMode("loop", true)
 MusicPlayer.settings.volume := 50
@@ -30,6 +31,7 @@ else
 ^!s::StopMusic()
 ^!Up::VolumeUp()
 ^!Down::VolumeDown()
+^!f::ToggleFullscreenMute()
 ^!q::ExitScript()
 
 InitializeTray()
@@ -44,7 +46,39 @@ InitializeTray()
     A_TrayMenu.Add("Volume Up", VolumeUp)
     A_TrayMenu.Add("Volume Down", VolumeDown)
     A_TrayMenu.Add()
+    A_TrayMenu.Add("Mute on Fullscreen: ON", ToggleFullscreenMute)
+    A_TrayMenu.Add()
     A_TrayMenu.Add("Exit", ExitScript)
+}
+
+UpdateTrayFullscreenLabel()
+{
+    global FullscreenMuteEnabled
+    Label := FullscreenMuteEnabled ? "Mute on Fullscreen: ON" : "Mute on Fullscreen: OFF"
+    try A_TrayMenu.Rename("Mute on Fullscreen: ON", Label)
+    try A_TrayMenu.Rename("Mute on Fullscreen: OFF", Label)
+}
+
+ToggleFullscreenMute(*)
+{
+    global FullscreenMuteEnabled
+    global WasPausedByFullscreen
+    global MusicPlayer
+
+    FullscreenMuteEnabled := !FullscreenMuteEnabled
+
+    ; If we're disabling the feature while music was paused by fullscreen, resume it
+    if !FullscreenMuteEnabled and WasPausedByFullscreen
+    {
+        PlayMusic()
+        WasPausedByFullscreen := false
+    }
+
+    UpdateTrayFullscreenLabel()
+    SaveSettings()
+
+    State := FullscreenMuteEnabled ? "ON" : "OFF"
+    TrayTip("Background Music", "Mute on Fullscreen: " State, 2)
 }
 
 LoadSettings()
@@ -52,6 +86,7 @@ LoadSettings()
     global ConfigFilePath
     global MusicFilePath
     global MusicPlayer
+    global FullscreenMuteEnabled
 
     if !FileExist(ConfigFilePath)
         return
@@ -60,12 +95,16 @@ LoadSettings()
     {
         SavedMusicFilePath := IniRead(ConfigFilePath, "Settings", "MusicFilePath", "")
         SavedVolume := IniRead(ConfigFilePath, "Settings", "Volume", "50")
+        SavedFullscreenMute := IniRead(ConfigFilePath, "Settings", "FullscreenMuteEnabled", "1")
 
         MusicFilePath := SavedMusicFilePath
 
         SavedVolume := Integer(SavedVolume)
         SavedVolume := ClampValue(SavedVolume, 0, 100)
         MusicPlayer.settings.volume := SavedVolume
+
+        FullscreenMuteEnabled := (SavedFullscreenMute = "1")
+        UpdateTrayFullscreenLabel()
     }
 }
 
@@ -74,9 +113,11 @@ SaveSettings()
     global ConfigFilePath
     global MusicFilePath
     global MusicPlayer
+    global FullscreenMuteEnabled
 
     IniWrite(MusicFilePath, ConfigFilePath, "Settings", "MusicFilePath")
     IniWrite(MusicPlayer.settings.volume, ConfigFilePath, "Settings", "Volume")
+    IniWrite(FullscreenMuteEnabled ? "1" : "0", ConfigFilePath, "Settings", "FullscreenMuteEnabled")
 }
 
 SelectMusicFile(*)
@@ -198,6 +239,10 @@ CheckFullscreenState()
     global WasPausedByFullscreen
     global LastFullscreenState
     global MusicFilePath
+    global FullscreenMuteEnabled
+
+    if !FullscreenMuteEnabled
+        return
 
     if MusicFilePath = ""
         return
@@ -239,28 +284,13 @@ IsActiveWindowFullscreen()
     if ActiveProcessName = "explorer.exe"
         return false
 
-    try
-    {
-        WindowMinMax := WinGetMinMax("ahk_id " ActiveWindowId)
-        if WindowMinMax = -1
-            return false
-    }
-    catch
-    {
-        return false
-    }
+    ; Check if the window is maximized
+    MinMaxState := 0
+    try MinMaxState := WinGetMinMax("ahk_id " ActiveWindowId)
+    if MinMaxState = 1
+        return true
 
-    try
-    {
-        WindowStyle := WinGetStyle("ahk_id " ActiveWindowId)
-        if !(WindowStyle & 0x10000000)
-            return false
-    }
-    catch
-    {
-        return false
-    }
-
+    ; Check if it covers the full monitor (true fullscreen apps)
     WindowX := 0
     WindowY := 0
     WindowW := 0
@@ -283,15 +313,12 @@ IsActiveWindowFullscreen()
     MonitorHeight := MonitorBottom - MonitorTop
     Tolerance := 2
 
-    CoversMonitor :=
-    (
+    return (
         Abs(WindowX - MonitorLeft) <= Tolerance
         and Abs(WindowY - MonitorTop) <= Tolerance
         and Abs(WindowW - MonitorWidth) <= Tolerance
         and Abs(WindowH - MonitorHeight) <= Tolerance
     )
-
-    return CoversMonitor
 }
 
 GetMonitorFromWindowCenter(WindowX, WindowY, WindowW, WindowH)
